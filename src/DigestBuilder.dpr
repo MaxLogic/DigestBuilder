@@ -1,6 +1,11 @@
 ﻿program DigestBuilder;
 
 uses
+  madExcept,
+  madLinkDisAsm,
+  madListHardware,
+  madListProcesses,
+  madListModules,
   Vcl.Forms,
   DigestBuilderMainForm in 'DigestBuilderMainForm.pas' {FileMergerMainFrm},
   FileMergerLogic in 'FileMergerLogic.pas',

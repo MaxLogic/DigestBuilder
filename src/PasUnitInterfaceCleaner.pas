@@ -3,7 +3,12 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, System.Character, System.Classes,
+  System.SysUtils,
+  System.Character,
+  System.Classes,
+  System.Generics.Collections,
+  System.Generics.Defaults,
+  System.StrUtils,
   autoFree;
 
 type
@@ -14,8 +19,18 @@ type
     ttStringLiteral,
     ttLineComment,
     ttBlockComment,
+    ttCompilerDirective,
+    ttKeywordUnit,
     ttKeywordInterface,
-    ttKeywordImplementation
+    ttKeywordImplementation,
+    ttKeywordClass,
+    ttKeywordRecord,
+    ttKeywordEnd,
+    ttKeywordPrivate,
+    ttKeywordStrictPrivate,
+    ttKeywordProtected,
+    ttKeywordPublic,
+    ttKeywordPublished
   );
 
   TToken = record
@@ -39,26 +54,29 @@ type
 
 implementation
 
+type
+  TClassState = (csKeeping, csDiscarding);
+  TParserState = (psRoot, psInClass);
+
 { TToken }
 
 constructor TToken.Create(aStart, aLen: Integer; aType: TTokenType);
 begin
-  Self.StartIndex := aStart;
-  Self.Length := aLen;
-  Self.TokenType := aType;
+  StartIndex := aStart;
+  Length     := aLen;
+  TokenType  := aType;
 end;
 
 function TToken.GetText(const aSource: string): string;
 begin
-  Result := Copy(aSource, Self.StartIndex, Self.Length);
+  Result := Copy(aSource, StartIndex, Length);
 end;
 
 { TInterfaceSectionCleaner }
 
 constructor TInterfaceSectionCleaner.Create;
 begin
-  inherited Create;
-  // Keywords that identify a comment as boilerplate to be removed.
+  inherited;
   fBoilerplateKeywords := [
     'license', 'copyright', 'author', 'created', 'modified',
     'all rights reserved', 'codegear', 'borland', 'embarcadero'
@@ -68,247 +86,356 @@ end;
 function TInterfaceSectionCleaner.IsBoilerplate(const aHeaderText: string): Boolean;
 var
   lKeyword: string;
-  lUpperHeader: string;
+  lUpper: string;
 begin
   Result := False;
-  lUpperHeader := aHeaderText.ToUpper;
+  lUpper := aHeaderText.ToUpper;
   for lKeyword in fBoilerplateKeywords do
-  begin
-    if lUpperHeader.Contains(lKeyword.ToUpper) then
+    if lUpper.Contains(lKeyword.ToUpper) then
       Exit(True);
-  end;
 end;
 
 function TInterfaceSectionCleaner.Tokenize(const aSource: string): TArray<TToken>;
 var
   lTokens: TList<TToken>;
-  lCurrentIndex: Integer;
-  lTokenStart: Integer;
-  lNestedLevel: Integer;
+  lIdx: Integer;
+  lStart: Integer;
+  lNest: Integer;
   c: Char;
   c2: Char;
+
+  function IsBreak(const aCh: Char): Boolean; inline;
+  begin
+    Result := TCharacter.IsWhiteSpace(aCh) or (aCh in
+      ['{', '''', '(', ')', ';', ':', ',', '[', ']']);
+  end;
+
 begin
   gc(lTokens, TList<TToken>.Create);
-  lCurrentIndex := 1;
+  lIdx := 1;
 
-  while (lCurrentIndex <= Length(aSource)) do
+  while lIdx <= Length(aSource) do
   begin
-    lTokenStart := lCurrentIndex;
-    c := aSource[lCurrentIndex];
+    lStart := lIdx;
+    c      := aSource[lIdx];
 
-    // 1. Whitespace
+    // 1. Whitespace ----------------------------------------------------------
     if TCharacter.IsWhiteSpace(c) then
     begin
-      while (lCurrentIndex <= Length(aSource)) and TCharacter.IsWhiteSpace(aSource[lCurrentIndex]) do
-        Inc(lCurrentIndex);
-      lTokens.Add(TToken.Create(lTokenStart, lCurrentIndex - lTokenStart, ttWhitespace));
+      repeat
+        Inc(lIdx);
+      until (lIdx > Length(aSource)) or
+            not TCharacter.IsWhiteSpace(aSource[lIdx]);
+      lTokens.Add(TToken.Create(lStart, lIdx - lStart, ttWhitespace));
     end
-    // 2. Line Comment
-    else if (c = '/') and (lCurrentIndex < Length(aSource)) and (aSource[lCurrentIndex + 1] = '/') then
+    // 2. Line Comment // -----------------------------------------------------
+    else if (c = '/') and (lIdx < Length(aSource)) and
+            (aSource[lIdx + 1] = '/') then
     begin
-      Inc(lCurrentIndex, 2);
-      while (lCurrentIndex <= Length(aSource)) and (not (aSource[lCurrentIndex] in [#10, #13])) do
-        Inc(lCurrentIndex);
-      lTokens.Add(TToken.Create(lTokenStart, lCurrentIndex - lTokenStart, ttLineComment));
+      Inc(lIdx, 2);
+      while (lIdx <= Length(aSource)) and
+            not (aSource[lIdx] in [#10, #13]) do
+        Inc(lIdx);
+      lTokens.Add(TToken.Create(lStart, lIdx - lStart, ttLineComment));
     end
-    // 3. Block Comment { ... } with nesting support
-    else if (c = '{') then
+    // 3. Block Comment { … } / {$ … } ---------------------------------------
+    else if c = '{' then
     begin
-      Inc(lCurrentIndex); // Move past the opening '{'
-      lNestedLevel := 1;
-      while (lCurrentIndex <= Length(aSource)) and (lNestedLevel > 0) do
+      if (lIdx < Length(aSource)) and (aSource[lIdx + 1] = '$') then
       begin
-        case aSource[lCurrentIndex] of
-          '{': Inc(lNestedLevel);
-          '}': Dec(lNestedLevel);
-        end;
-        Inc(lCurrentIndex);
-      end;
-      lTokens.Add(TToken.Create(lTokenStart, lCurrentIndex - lTokenStart, ttBlockComment));
-    end
-    // 4. Block Comment (* ... *) with nesting support
-    else if (c = '(') and (lCurrentIndex < Length(aSource)) and (aSource[lCurrentIndex + 1] = '*') then
-    begin
-      Inc(lCurrentIndex, 2);
-      lNestedLevel := 1;
-      while (lCurrentIndex <= Length(aSource)) and (lNestedLevel > 0) do
+        lIdx := aSource.IndexOf('}', lIdx) + 1;
+        if lIdx = 0 then
+          lIdx := Length(aSource) + 1;
+        lTokens.Add(TToken.Create(lStart, lIdx - lStart, ttCompilerDirective));
+      end else
       begin
-        if (aSource[lCurrentIndex] = '(') and (lCurrentIndex < Length(aSource)) and (aSource[lCurrentIndex+1] = '*') then
+        Inc(lIdx);
+        lNest := 1;
+        while (lIdx <= Length(aSource)) and (lNest > 0) do
         begin
-          Inc(lNestedLevel);
-          Inc(lCurrentIndex, 2);
-        end
-        else if (aSource[lCurrentIndex] = '*') and (lCurrentIndex < Length(aSource)) and (aSource[lCurrentIndex+1] = ')') then
-        begin
-          Dec(lNestedLevel);
-          Inc(lCurrentIndex, 2);
-        end
-        else
-        begin
-          Inc(lCurrentIndex);
-        end;
-      end;
-      lTokens.Add(TToken.Create(lTokenStart, lCurrentIndex - lTokenStart, ttBlockComment));
-    end
-    // 5. String Literal
-    else if (c = '''') then
-    begin
-      Inc(lCurrentIndex);
-      while lCurrentIndex <= Length(aSource) do
-      begin
-        if aSource[lCurrentIndex] = '''' then
-        begin
-          if (lCurrentIndex < Length(aSource)) and (aSource[lCurrentIndex + 1] = '''') then
-            Inc(lCurrentIndex, 2) // Escaped quote
-          else
-          begin
-            Inc(lCurrentIndex); // End of string
-            Break;
+          case aSource[lIdx] of
+            '{': Inc(lNest);
+            '}': Dec(lNest);
           end;
-        end
-        else
-        begin
-          Inc(lCurrentIndex);
+          Inc(lIdx);
         end;
+        lTokens.Add(TToken.Create(lStart, lIdx - lStart, ttBlockComment));
       end;
-      lTokens.Add(TToken.Create(lTokenStart, lCurrentIndex - lTokenStart, ttStringLiteral));
     end
-    // 6. Code
+    // 4. Block Comment (* … *) / (*$ … *) -----------------------------------
+    else if (c = '(') and (lIdx < Length(aSource)) and
+            (aSource[lIdx + 1] = '*') then
+    begin
+      if (lIdx + 2 < Length(aSource)) and (aSource[lIdx + 2] = '$') then
+      begin
+        lIdx := aSource.IndexOf('*)', lIdx) + 2;
+        if lIdx = 1 then
+          lIdx := Length(aSource) + 1;
+        lTokens.Add(TToken.Create(lStart, lIdx - lStart, ttCompilerDirective));
+      end else
+      begin
+        Inc(lIdx, 2);
+        lNest := 1;
+        while (lIdx <= Length(aSource)) and (lNest > 0) do
+        begin
+          if (aSource[lIdx] = '(') and (aSource[lIdx + 1] = '*') then
+          begin
+            Inc(lNest);
+            Inc(lIdx, 2);
+          end
+          else if (aSource[lIdx] = '*') and (aSource[lIdx + 1] = ')') then
+          begin
+            Dec(lNest);
+            Inc(lIdx, 2);
+          end
+          else
+            Inc(lIdx);
+        end;
+        lTokens.Add(TToken.Create(lStart, lIdx - lStart, ttBlockComment));
+      end;
+    end
+    // 5. String Literal ------------------------------------------------------
+    else if c = '''' then
+    begin
+      repeat
+        Inc(lIdx);
+        if (lIdx <= Length(aSource)) and (aSource[lIdx] = '''') and
+           (lIdx < Length(aSource))  and (aSource[lIdx + 1] = '''') then
+          Inc(lIdx); // handle doubled quotes
+      until (lIdx > Length(aSource)) or (aSource[lIdx] = '''');
+      Inc(lIdx);
+      lTokens.Add(TToken.Create(lStart, lIdx - lStart, ttStringLiteral));
+    end
+    // 6. Code / Identifier / Punctuation ------------------------------------
     else
     begin
-      while (lCurrentIndex <= Length(aSource)) do
+      // --- fast-path punctuation (prevents zero-length tokens / endless loop)
+      if aSource[lIdx] in ['(', ')', ';', ':', ',', '[', ']', '.'] then
       begin
-        c2 := aSource[lCurrentIndex];
-        if TCharacter.IsWhiteSpace(c2) or (c2 = '{') or (c2 = '''') then
-          Break;
-        if (c2 = '/') and (lCurrentIndex < Length(aSource)) and (aSource[lCurrentIndex + 1] = '/') then
-          Break;
-        if (c2 = '(') and (lCurrentIndex < Length(aSource)) and (aSource[lCurrentIndex + 1] = '*') then
-          Break;
-        Inc(lCurrentIndex);
+        Inc(lIdx); // ensure progress
+        lTokens.Add(TToken.Create(lStart, 1, ttCode));
+        Continue;  // process next char
       end;
-      var lToken := TToken.Create(lTokenStart, lCurrentIndex - lTokenStart, ttCode);
-      var lLowerTokenText := lToken.GetText(aSource).ToLowerInvariant;
-      if lLowerTokenText = 'interface' then
-        lToken.TokenType := ttKeywordInterface
-      else if lLowerTokenText = 'implementation' then
-        lToken.TokenType := ttKeywordImplementation;
-      lTokens.Add(lToken);
+
+      while (lIdx <= Length(aSource)) do
+      begin
+        c2 := aSource[lIdx];
+        if IsBreak(c2) then Break;
+        if (c2 = '/') and (lIdx < Length(aSource)) and
+           (aSource[lIdx + 1] = '/') then Break;
+        if (c2 = '(') and (lIdx < Length(aSource)) and
+           (aSource[lIdx + 1] = '*') then Break;
+        Inc(lIdx);
+      end;
+
+      var lTextLower := aSource.Substring(lStart - 1, lIdx - lStart).ToLowerInvariant;
+      var lTok := TToken.Create(lStart, lIdx - lStart, ttCode);
+
+      if      lTextLower.StartsWith('unit')           then lTok.TokenType := ttKeywordUnit
+      else if lTextLower.StartsWith('interface')      then lTok.TokenType := ttKeywordInterface
+      else if lTextLower.StartsWith('implementation') then lTok.TokenType := ttKeywordImplementation
+      else if lTextLower.StartsWith('class')          then lTok.TokenType := ttKeywordClass
+      else if lTextLower.StartsWith('record')         then lTok.TokenType := ttKeywordRecord
+      else if lTextLower.StartsWith('end')            then lTok.TokenType := ttKeywordEnd
+      else if lTextLower.StartsWith('private')        then lTok.TokenType := ttKeywordPrivate
+      else if lTextLower.StartsWith('protected')      then lTok.TokenType := ttKeywordProtected
+      else if lTextLower.StartsWith('public')         then lTok.TokenType := ttKeywordPublic
+      else if lTextLower.StartsWith('published')      then lTok.TokenType := ttKeywordPublished
+      else if lTextLower.StartsWith('strict') then
+      begin
+        var lWs := lIdx;
+        while (lWs <= Length(aSource)) and
+              TCharacter.IsWhiteSpace(aSource[lWs]) do
+          Inc(lWs);
+        if (lWs + 6 <= Length(aSource)) and
+           (CompareText(aSource.Substring(lWs, 7), 'private') = 0) then
+        begin
+          lIdx := lWs + 7;
+          lTok := TToken.Create(lStart, lIdx - lStart, ttKeywordStrictPrivate);
+        end;
+      end;
+
+      lTokens.Add(lTok);
     end;
   end;
 
   Result := lTokens.ToArray;
 end;
 
-function TInterfaceSectionCleaner.AnalyzeAndBuild(const aSource: string; const aTokens: TArray<TToken>): string;
-var
-  i, j: Integer;
-  lInterfaceTokenIndex: Integer;
-  lImplementationTokenIndex: Integer;
-  lFinalStartIndex: Integer;
-  lFinalEndIndex: Integer;
-  lHeaderStartIndex: Integer;
-  lHeaderCommentBlock: string;
-begin
-  // Stage 1: Find the boundaries
-  lInterfaceTokenIndex := -1;
-  lImplementationTokenIndex := -1;
 
-  for i := 0 to High(aTokens) do
-  begin
-    if aTokens[i].TokenType = ttKeywordInterface then
-    begin
-      if lInterfaceTokenIndex = -1 then // Find first occurrence
-        lInterfaceTokenIndex := i;
-    end
-    else if aTokens[i].TokenType = ttKeywordImplementation then
-    begin
-      lImplementationTokenIndex := i; // Find last occurrence
+function TInterfaceSectionCleaner.AnalyzeAndBuild(
+  const aSource: string; const aTokens: TArray<TToken>): string;
+var
+  lI, lJ: Integer;
+  lUnitIdx, lIntfIdx, lImplIdx: Integer;
+  lUnitEnd: Integer;
+  lSB: TStringBuilder;
+  lState: TParserState;
+  lTok: TToken;
+  lStack: TStack<TClassState>;
+begin
+  lUnitIdx := -1;
+  lIntfIdx := -1;
+  lImplIdx := -1;
+
+  for lI := 0 to High(aTokens) do
+    case aTokens[lI].TokenType of
+      ttKeywordUnit:            if lUnitIdx = -1 then lUnitIdx := lI;
+      ttKeywordInterface:       if lIntfIdx = -1 then lIntfIdx := lI;
+      ttKeywordImplementation:  if lImplIdx = -1 then lImplIdx := lI;
     end;
+
+  if lIntfIdx = -1 then Exit(aSource);
+
+  if lImplIdx = -1 then lImplIdx := High(aTokens) + 1;
+  if lUnitIdx = -1 then lUnitIdx := 0;
+
+  gc(lSB, TStringBuilder.Create);
+
+  // copy unit header ---------------------------------------------------------
+  lUnitEnd := lUnitIdx;
+  for lI := lUnitIdx to lIntfIdx - 1 do
+    if (aTokens[lI].TokenType = ttCode) and
+       (aTokens[lI].GetText(aSource) = ';') then
+    begin
+      lUnitEnd := lI;
+      Break;
+    end;
+
+  lSB.Append(aSource.Substring(
+    aTokens[lUnitIdx].StartIndex - 1,
+    (aTokens[lUnitEnd].StartIndex + aTokens[lUnitEnd].Length) -
+    aTokens[lUnitIdx].StartIndex));
+
+  // optional comment block ---------------------------------------------------
+  var lHdrStart := lUnitEnd + 1;
+  var lFirstCmt := -1;
+  var lHdrTxt: TStringBuilder;
+  gc(lHdrTxt, TStringBuilder.Create);
+
+  for lI := lIntfIdx - 1 downto lHdrStart do
+  begin
+    lTok := aTokens[lI];
+    if lTok.TokenType = ttWhitespace then Continue;
+
+    if lTok.TokenType in [ttLineComment, ttBlockComment] then
+    begin
+      lFirstCmt := lI;
+      for lJ := lI downto lHdrStart do
+      begin
+        var lPrev := aTokens[lJ];
+        if lPrev.TokenType in [ttWhitespace, ttLineComment, ttBlockComment] then
+        begin
+          lFirstCmt := lJ;
+          lHdrTxt.Insert(0, lPrev.GetText(aSource));
+        end
+        else Break;
+      end;
+      Break;
+    end
+    else Break;
   end;
 
-  // If no interface keyword, return original string as per spec
-  if lInterfaceTokenIndex = -1 then
-    Exit(aSource);
-
-  // Default start is the beginning of the 'interface' keyword
-  lFinalStartIndex := aTokens[lInterfaceTokenIndex].StartIndex;
-
-  // Stage 2: Analyze potential header comment
-  // Note on unclosed comments: The tokenizer is tolerant and will treat an unclosed
-  // comment as running to the end of the file. This is acceptable for this tool's purpose.
-  lHeaderStartIndex := -1;
-  lHeaderCommentBlock := '';
-
-  // Walk backwards from the interface token to find a comment block
-  for i := lInterfaceTokenIndex - 1 downto 0 do
+  if lFirstCmt <> -1 then
   begin
-    var lCurrentToken := aTokens[i];
-    if lCurrentToken.TokenType = ttWhitespace then
-      Continue; // Skip whitespace
+    if IsBoilerplate(lHdrTxt.ToString) then
+      for lI := lHdrStart to lFirstCmt - 1 do
+        lSB.Append(aTokens[lI].GetText(aSource))
+    else
+      for lI := lHdrStart to lIntfIdx - 1 do
+        lSB.Append(aTokens[lI].GetText(aSource));
+  end
+  else
+    for lI := lHdrStart to lIntfIdx - 1 do
+      lSB.Append(aTokens[lI].GetText(aSource));
 
-    if (lCurrentToken.TokenType = ttBlockComment) or (lCurrentToken.TokenType = ttLineComment) then
-    begin
-      // Found the end of a comment block, now find its beginning
-      lHeaderStartIndex := lCurrentToken.StartIndex;
-      var lHeaderText: TStringBuilder;
-      gc(lHeaderText, TStringBuilder.Create);
+  // interface parsing --------------------------------------------------------
+  gc(lStack, TStack<TClassState>.Create);
+  lState := psRoot;
 
-      // Walk backwards to gather all contiguous comment/whitespace tokens
-      for j := i downto 0 do
+  for lI := lIntfIdx to lImplIdx - 1 do
+  begin
+    lTok := aTokens[lI];
+    var lEmit := True;
+
+    case lState of
+      psRoot:
       begin
-        var lPrevToken := aTokens[j];
-        if (lPrevToken.TokenType = ttLineComment) or (lPrevToken.TokenType = ttBlockComment) or (lPrevToken.TokenType = ttWhitespace) then
+        if lTok.TokenType in [ttKeywordClass, ttKeywordRecord] then
         begin
-          lHeaderStartIndex := lPrevToken.StartIndex;
-          lHeaderText.Insert(0, lPrevToken.GetText(aSource));
-        end
-        else
-        begin
-          Break; // Not a contiguous comment block
+          lStack.Push(csKeeping);
+          lState := psInClass;
         end;
       end;
-      lHeaderCommentBlock := lHeaderText.ToString;
-      Break;
-    end
-    else
-    begin
-      // Found non-comment, non-whitespace token, so no header
-      Break;
+
+      psInClass:
+      begin
+        var lMode := csKeeping;
+        if lStack.Count > 0 then
+          lMode := lStack.Peek;
+
+        case lTok.TokenType of
+          ttKeywordPrivate, ttKeywordStrictPrivate:
+          begin
+            lStack.Pop;
+            lStack.Push(csDiscarding);
+            lEmit := False;
+          end;
+
+          ttKeywordProtected, ttKeywordPublic, ttKeywordPublished:
+          begin
+            lStack.Pop;
+            lStack.Push(csKeeping);
+          end;
+
+          ttKeywordClass, ttKeywordRecord:
+            lStack.Push(lMode);
+
+          ttKeywordEnd:
+          begin
+            lStack.Pop;
+            if lStack.Count = 0 then
+              lState := psRoot;
+          end;
+        end;
+
+        if not (lTok.TokenType in
+          [ttKeywordPrivate, ttKeywordStrictPrivate,
+           ttKeywordProtected, ttKeywordPublic, ttKeywordPublished]) then
+          lEmit := lEmit and ( (lStack.Count = 0) or (lStack.Peek = csKeeping) );
+      end;
     end;
+
+    if lEmit then
+      lSB.Append(lTok.GetText(aSource));
   end;
 
-  // Stage 3: Decide whether to keep the header
-  if lHeaderStartIndex <> -1 then
+  // trailing whitespace + implementation ------------------------------------
+  var lTrim := lSB.Length;
+  while (lTrim > 0) and TCharacter.IsWhiteSpace(lSB[lTrim - 1]) do
+    Dec(lTrim);
+  lSB.Length := lTrim;
+
+  if lImplIdx <= High(aTokens) then
   begin
-    if not IsBoilerplate(lHeaderCommentBlock) then
-    begin
-      lFinalStartIndex := lHeaderStartIndex;
-    end;
+    lSB.AppendLine;
+    lSB.AppendLine;
+    lSB.Append('implementation');
   end;
 
-  // Stage 4: Determine the end index
-  if lImplementationTokenIndex <> -1 then
-    lFinalEndIndex := aTokens[lImplementationTokenIndex].StartIndex - 1
-  else
-    lFinalEndIndex := Length(aSource); // To the end of the file
-
-  // Stage 5: Assemble the final string
-  Result := Copy(aSource, lFinalStartIndex, (lFinalEndIndex - lFinalStartIndex) + 1);
+  Result := lSB.ToString;
 end;
 
 function TInterfaceSectionCleaner.Process(const aSource: string): string;
 var
-  lTokens: TArray<TToken>;
+  lToks: TArray<TToken>;
 begin
   if aSource.IsEmpty then
     Exit('');
 
-  // Stage 1: Lexical Tokenization
-  lTokens := Self.Tokenize(aSource);
-
-  // Stage 2: Structural Analysis & String Assembly
-  Result := Self.AnalyzeAndBuild(aSource, lTokens);
+  lToks  := Tokenize(aSource);
+  Result := AnalyzeAndBuild(aSource, lToks);
 end;
 
 end.
+
