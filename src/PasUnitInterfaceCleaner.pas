@@ -47,6 +47,14 @@ type
     function IsBoilerplate(const aHeaderText: string): Boolean;
     function Tokenize(const aSource: string): TArray<TToken>;
     function AnalyzeAndBuild(const aSource: string; const aTokens: TArray<TToken>): string;
+    function RemoveRedundantPropertyReexposures(
+  const aSource: string): String;
+    function RemoveCompatibilityShims(const aSource: string): string;
+    function RemoveAliasConstants(const aSource: string): string;
+    function CompressEnumDeclarations(const aSource: string): string;
+    function RemoveDispInterfaces(const aSource: string): string;
+    function RemovePropertyStorageHints(const aSource: string): string;
+    function NormalizeWhitespace(const aSource: string): string;
   public
     constructor Create;
     function Process(const aSource: string): string;
@@ -262,7 +270,6 @@ begin
   Result := lTokens.ToArray;
 end;
 
-
 function TInterfaceSectionCleaner.AnalyzeAndBuild(
   const aSource: string; const aTokens: TArray<TToken>): string;
 var
@@ -435,7 +442,484 @@ begin
 
   lToks  := Tokenize(aSource);
   Result := AnalyzeAndBuild(aSource, lToks);
+  Result := RemoveRedundantPropertyReexposures(Result); // <-- new line
+  Result := RemoveCompatibilityShims(Result);           // <-- step 2
+  Result := RemoveAliasConstants(Result);               // pass #3  <-- new line
+  Result := CompressEnumDeclarations(Result);           // pass #4  <-- new
+  Result := RemoveDispInterfaces(Result);               // pass 5  <-- new line
+  Result := RemovePropertyStorageHints(Result);         // pass 6  <-- NEW
+  Result := NormalizeWhitespace(Result);                // pass 7  <-- NEW
 end;
+
+
+/// <summary>
+/// *  trims trailing spaces/tabs,
+/// *  collapses runs of 2+ blank lines into one,
+/// *  reduces any leading indentation to a single space
+///    (if the line originally had *any* leading whitespace).
+/// </summary>
+function TInterfaceSectionCleaner.NormalizeWhitespace(
+  const aSource: string): string;
+var
+  lLines : TStringList;
+  lOut   : TStringBuilder;
+  i      : Integer;
+  lLine  : string;
+  lTrimR : string;
+  lPrevBlank: Boolean;
+begin
+  gc(lLines, TStringList.Create);
+  lLines.LineBreak := sLineBreak;
+  lLines.Text := aSource;
+
+  gc(lOut, TStringBuilder.Create(aSource.Length));
+
+  lPrevBlank := False;
+
+  for i := 0 to lLines.Count - 1 do
+  begin
+    lLine  := lLines[i];
+    lTrimR := TrimRight(lLine);                      // strip trailing ws
+
+    if Trim(lTrimR) = '' then                   // blank after trim
+    begin
+      if not lPrevBlank then
+      begin
+        lOut.AppendLine;                        // keep a single blank
+        lPrevBlank := True;
+      end;
+      Continue;
+    end;
+
+    // non-blank line ---------------------------------------------------------
+    lPrevBlank := False;
+
+    // compress indentation to a single space (if any existed)
+    var lCore := lTrimR.TrimLeft;
+    if lCore.Length < lTrimR.Length then
+      lOut.Append(' ').AppendLine(lCore)
+    else
+      lOut.AppendLine(lCore);
+  end;
+
+  Result := lOut.ToString;
+end;
+
+
+/// <summary>
+/// Deletes “default …”, “stored …”, and “nodefault” tokens from property
+/// declarations – e.g.
+///
+///   property Enabled: Boolean read GetEnabled write SetEnabled default True;
+///   property Controls: TMyCtl read FCtl stored False;
+///   property Size: Integer read FSize nodefault;
+///
+/// all collapse to
+///
+///   property Enabled: Boolean read GetEnabled write SetEnabled;
+///   property Controls: TMyCtl read FCtl;
+///   property Size: Integer read FSize;
+/// </summary>
+function TInterfaceSectionCleaner.RemovePropertyStorageHints(
+  const aSource: string): string;
+
+  function PosTextInsensitive(const aSub, aText: string; aOffset: Integer = 1): Integer;
+  begin
+    Result := PosEx(LowerCase(aSub), LowerCase(aText), aOffset);
+  end;
+
+  // strips one hint type (“default ”, “stored ”, “nodefault”) from a single line
+  procedure StripHint(var aLine: string; const aHint: string);
+  var
+    p, semi: Integer;
+  begin
+    repeat
+      p := PosTextInsensitive(aHint, aLine);
+      if p = 0 then
+        Exit;
+
+      semi := PosEx(';', aLine, p + Length(aHint));
+      if semi = 0 then
+        semi := Length(aLine) + 1;
+
+      Delete(aLine, p, semi - p);
+    until False;
+  end;
+
+var
+  lLines: TStringList;
+  lOut  : TStringBuilder;
+  i     : Integer;
+  lLine : string;
+begin
+  gc(lLines, TStringList.Create);
+  lLines.LineBreak := sLineBreak;
+  lLines.Text := aSource;
+
+  gc(lOut, TStringBuilder.Create(aSource.Length));
+
+  for i := 0 to lLines.Count - 1 do
+  begin
+    lLine := lLines[i];
+
+    if lLine.TrimLeft.StartsWith('property', True) then
+    begin
+      StripHint(lLine, 'default ');
+      StripHint(lLine, 'stored ');
+      StripHint(lLine, 'nodefault');
+    end;
+
+    lOut.AppendLine(lLine);
+  end;
+
+  Result := lOut.ToString;
+end;
+
+
+/// <summary>
+/// Removes auto-generated COM dispinterface stubs:
+///   IMyFooDisp = dispinterface
+///   ['{GUID}']
+///   procedure Bar; safecall;
+///   end;
+///
+/// Everything from the line that contains “dispinterface” through the matching
+/// “end;” (or bare “end”) is discarded.
+/// </summary>
+function TInterfaceSectionCleaner.RemoveDispInterfaces(
+  const aSource: string): string;
+var
+  lLines : TStringList;
+  lOut   : TStringBuilder;
+  i      : Integer;
+  lTrim  : string;
+  lSkip  : Boolean;
+begin
+  gc(lLines, TStringList.Create);
+  lLines.LineBreak := sLineBreak;
+  lLines.Text := aSource;
+
+  gc(lOut, TStringBuilder.Create(aSource.Length));
+
+  lSkip := False;
+
+  for i := 0 to lLines.Count - 1 do
+  begin
+    lTrim := lLines[i].TrimLeft.ToLower;
+
+    if not lSkip then
+    begin
+      // Start skipping when we meet “= dispinterface”
+      if (lTrim.Contains('dispinterface')) and (lTrim.Contains('=')) then
+      begin
+        lSkip := True;
+        Continue;                        // drop this trigger line
+      end;
+    end
+    else
+    begin
+      // Inside a dispinterface block ­– look for terminator
+      if lTrim.StartsWith('end') then
+      begin
+        lSkip := False;                 // do NOT output the “end;” line
+        Continue;
+      end
+      else
+        Continue;                       // swallow interior lines
+    end;
+
+    // Normal line
+    lOut.AppendLine(lLines[i]);
+  end;
+
+  Result := lOut.ToString;
+end;
+
+
+/// <summary>
+/// Flattens multi-line enum declarations to a single line:
+///
+///   TMyEnum = (
+///     eOne,
+///     eTwo,
+///     eThree
+///   );
+///
+/// becomes
+///
+///   TMyEnum = (eOne, eTwo, eThree);
+/// </summary>
+function TInterfaceSectionCleaner.CompressEnumDeclarations(
+  const aSource: string): string;
+var
+  lLines     : TStringList;
+  lEnumItems : TStringList;
+  lOut       : TStringBuilder;
+  i          : Integer;
+  lLine      : string;
+  lTrim      : string;
+  lInEnum    : Boolean;
+  lPrefix    : string;
+begin
+  gc(lLines, TStringList.Create);
+  lLines.LineBreak := sLineBreak;
+  lLines.Text := aSource;
+
+  gc(lEnumItems, TStringList.Create);
+  lEnumItems.StrictDelimiter := True;  // no smart quote handling
+  lEnumItems.Delimiter := ',';
+
+  gc(lOut, TStringBuilder.Create(aSource.Length));
+
+  lInEnum := False;
+  lPrefix := '';
+
+  for i := 0 to lLines.Count - 1 do
+  begin
+    lLine := lLines[i];
+    lTrim := lLine.Trim;
+
+    // -----------------------------------------------------------------------
+    // Detect start of multi-line enum: "identifier = (" with NO ')'
+    // -----------------------------------------------------------------------
+    if (not lInEnum) then
+    begin
+      var openPos := lTrim.IndexOf('=(');
+      if (openPos > 0) and (lTrim.IndexOf(')') = -1) then
+      begin
+        lInEnum := True;
+        lPrefix := lLine.Substring(0, lLine.IndexOf('(') + 1); // keeps indent
+
+        // collect any items on the same line after '('
+        var rest := lTrim.Substring(openPos + 2).Trim;
+        rest := rest.TrimRight([',']);
+        if rest <> '' then
+          lEnumItems.Add(rest);
+        Continue; // do not emit this line now
+      end;
+    end
+    else
+    begin
+      // --------------------------------------------------------------------
+      // Inside enum block
+      // --------------------------------------------------------------------
+      var closePos := lTrim.IndexOf(')');
+      if closePos <> -1 then
+      begin
+        // last line of the enum
+        var part := lTrim.Substring(0, closePos).Trim;
+        part := part.TrimRight([',']);
+        if part <> '' then
+          lEnumItems.Add(part);
+
+        // emit compressed enum
+        lOut.Append(lPrefix);
+        for var j := 0 to lEnumItems.Count - 1 do
+        begin
+          if j > 0 then
+            lOut.Append(', ');
+          lOut.Append(lEnumItems[j]);
+        end;
+        lOut.Append(');').AppendLine;
+
+        // reset state
+        lInEnum := False;
+        lEnumItems.Clear;
+        Continue; // nothing else to add from this line
+      end
+      else
+      begin
+        // middle line of the enum
+        var item := lTrim.TrimRight([',']);
+        if item <> '' then
+          lEnumItems.Add(item);
+        Continue; // skip emitting this line
+      end;
+    end;
+
+    // normal line (outside enum)
+    lOut.AppendLine(lLine);
+  end;
+
+  Result := lOut.ToString;
+end;
+
+
+/// <summary>
+/// Removes single-line constant declarations whose right-hand side is just a
+/// qualified identifier (e.g.  Foo = UnitName.Foo;).
+/// </summary>
+function TInterfaceSectionCleaner.RemoveAliasConstants(
+  const aSource: string): string;
+var
+  lLines: TStringList;
+  lOut  : TStringBuilder;
+  i     : Integer;
+  lLine : string;
+
+  function IsAliasConst(const aText: string): Boolean;
+  var
+    lEqPos, lSemiPos, lDotPos: Integer;
+    lRhs: string;
+    ch  : Char;
+  begin
+    Result := False;
+
+    lEqPos   := aText.IndexOf('=');
+    lSemiPos := aText.IndexOf(';');
+    if (lEqPos = -1) or (lSemiPos = -1) or (lSemiPos < lEqPos) then
+      Exit;
+
+    // Extract right-hand side
+    lRhs   := aText.Substring(lEqPos + 1, lSemiPos - lEqPos - 1).Trim;
+    lDotPos := lRhs.IndexOf('.');
+    if lDotPos = -1 then
+      Exit;                       // not qualified → keep
+
+    // Ensure RHS is only identifiers + dots
+    for ch in lRhs do
+      if not (TCharacter.IsLetterOrDigit(ch) or (ch = '.') or (ch = '_')) then
+        Exit;                     // contains operators / literals → keep
+
+    Result := True;               // qualifies as a mirror constant
+  end;
+
+begin
+  gc(lLines, TStringList.Create);
+  lLines.LineBreak := sLineBreak;
+  lLines.Text := aSource;
+
+  gc(lOut, TStringBuilder.Create(aSource.Length));
+
+  for i := 0 to lLines.Count - 1 do
+  begin
+    lLine := lLines[i];
+
+    if IsAliasConst(lLine.TrimLeft) then
+      Continue;                   // drop mirror constant
+
+    lOut.AppendLine(lLine);
+  end;
+
+  Result := lOut.ToString;
+end;
+
+
+
+/// <summary>
+/// Drops "1.x / compatibility / legacy / deprecated" shim blocks.
+/// Heuristic:  when we hit a line whose trimmed lowercase text contains any
+/// of the trigger words, we skip that line and every subsequent line until
+///   * we see a completely blank line,  OR
+///   * the line starts with a section keyword (type/const/var/
+function TInterfaceSectionCleaner.RemoveCompatibilityShims(
+  const aSource: string): string;
+const
+  CTriggers: array[0..3] of string = ('compatibility', 'deprecated', 'legacy', '1.x');
+  // section keywords that mark the end of a shim block
+  CSectionStarters: array[0..10] of string = (
+    'type', 'const', 'var', 'resourcestring', 'procedure', 'function',
+    'interface', 'implementation', 'begin', 'class', 'record');
+var
+  lLines: TStringList;
+  lOut: TStringBuilder;
+  i: Integer;
+  lLine: string;
+  lSkip: Boolean;
+  lLower: string;
+  k: string;
+begin
+  gc(lLines, TStringList.Create);
+  lLines.LineBreak := sLineBreak;
+  lLines.Text := aSource;
+
+  gc(lOut, TStringBuilder.Create(aSource.Length));
+
+  lSkip := False;
+
+  for i := 0 to lLines.Count - 1 do
+  begin
+    lLine  := lLines[i];
+    lLower := lLine.TrimLeft.ToLower;
+
+    // --- begin skip?
+    if not lSkip then
+      for k in CTriggers do
+        if lLower.Contains(k) then
+        begin
+          lSkip := True;
+          Break;                 // do NOT add this trigger line
+        end;
+
+    // --- inside skip block?
+    if lSkip then
+    begin
+      // terminate skip on blank line
+      if lLower = '' then
+      begin
+        lSkip := False;
+        Continue;                // drop the blank line too
+      end;
+
+      // or on a new section
+      for k in CSectionStarters do
+        if lLower.StartsWith(k) then
+        begin
+          lSkip := False;
+          Break;                 // we’ll add this line below
+        end;
+    end;
+
+    if not lSkip then
+      lOut.AppendLine(lLine);
+  end;
+
+  Result := lOut.ToString;
+end;
+
+
+function TInterfaceSectionCleaner.RemoveRedundantPropertyReexposures(
+  const aSource: string): string;
+var
+  lLines: TStringList;
+  lOut: TStringBuilder;
+  i: Integer;
+  lLine: string;
+  lTrim: string;
+begin
+  gc(lLines, TStringList.Create);
+  lLines.LineBreak := sLineBreak;
+  lLines.Text := aSource;
+
+  gc(lOut, TStringBuilder.Create(aSource.Length));
+
+  for i := 0 to lLines.Count - 1 do
+  begin
+    lLine := lLines[i];
+    lTrim := lLine.TrimLeft;
+
+    if lTrim.StartsWith('property', True) then
+    begin
+      // text after the keyword
+      var lRest := lTrim.Substring(8).Trim; // 8 = Length('property')
+      // heuristic: re-published property has *no* type part or accessor list
+      if (not lRest.Contains(':')) and
+         (not lRest.Contains('read')) and
+         (not lRest.Contains('write')) and
+         (not lRest.Contains('index')) and
+         (not lRest.Contains('implements')) and
+         (not lRest.Contains('default')) and
+         (not lRest.Contains('stored')) and
+         (not lRest.Contains('nodefault')) then
+        Continue; //  drop the whole line
+    end;
+
+    lOut.AppendLine(lLine);
+  end;
+
+  Result := lOut.ToString;
+end;
+
 
 end.
 
