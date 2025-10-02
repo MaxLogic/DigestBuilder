@@ -13,7 +13,7 @@ type
     fParams: iCmdLineparams ;
     function InternExecute: Boolean;
     procedure ShowHelp;
-    procedure DoExport(const aFileName: String);
+    procedure DoExport;
   public
     constructor Create;
     destructor Destroy; override;
@@ -40,7 +40,7 @@ begin
   inherited;
 end;
 
-procedure TCliProcessor.DoExport(const aFileName: String);
+procedure TCliProcessor.DoExport;
 var
   lProject: TProject;
   fn, lOutputFile: string;
@@ -52,7 +52,9 @@ begin
   lFileProcessor:= TFileProcessor.Create(lSettings);
   gc(lFileProcessor);
 
-  lOutputFile:= ExpandFileName( aFileName);
+  if not fParams.find('out', lOutputFile) then
+    lOutputFile:= 'pas-api-map.md';
+  lOutputFile:= ExpandFileName(lOutputFile);
 
   // Default project name if empty
   lProject:= default(TProject);
@@ -88,16 +90,12 @@ begin
 end;
 
 function TCliProcessor.InternExecute: Boolean;
-var
-  fn: String;
 begin
   Result:= True;
   if fParams.find('help') then
     showHelp
-  else if fParams.Find('out', fn) then
-    DoExport(fn)
   else
-    Result:= false;
+    DoExport;
 end;
 
 procedure TCliProcessor.ShowHelp;
@@ -139,6 +137,7 @@ begin
   lDescFile := '';
   lInclMap := fParams.find('incl-map'); // flag-present = True
   lFull := fParams.find('full');
+  lOutFile:= 'pas-api-map.md';
 
   // override with provided params if present
   if fParams.find('out', s) then
@@ -168,7 +167,7 @@ begin
   Writeln;
   Writeln('Options:');
 
-  PrintOpt('out',       IfThen(lOutFile<>'', ExpandFileName(lOutFile), '<required>'),
+  PrintOpt('out',       IfThen(lOutFile<>'', ExpandFileName(lOutFile), 'pas-api-map.md'),
            'Output file to generate (required)');
 
   PrintOpt('title', lTitle,
