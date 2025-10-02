@@ -63,7 +63,8 @@ var
 implementation
 
 uses
-  autoFree, autoHourGlass, system.strutils, system.masks;
+  autoFree, autoHourGlass, system.strutils, system.masks,
+  MaxLogic.ioUtils;
 
 {$R *.dfm}
 
@@ -139,7 +140,8 @@ begin
   lProject.PasInterfaceSectionOnly:= ckbInterfaceOnly.Checked;
 
   // Process project
-  lOutputFile := fFileProcessor.ProcessProject(lProject);
+  lOutputFile := CombinePath([GetInstallDir, 'Output', lProject.Name + '.md']);
+  fFileProcessor.ProcessProject(lProject, lOutputFile);
 
   // Copy to clipboard if enabled
   if chkCopyOutputToClipboard.Checked then

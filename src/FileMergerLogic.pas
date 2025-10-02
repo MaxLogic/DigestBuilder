@@ -47,6 +47,7 @@ type
   /// </summary>
   TProject = record
     Name: string;
+    FileList: String; // filename of a text file containing the file list to be included. one file per line
     SourceDir: string;
     FileMask: string;
     Description: string;
@@ -90,11 +91,11 @@ type
     // File gathering and processing
     procedure GatherFiles(const aSourceDir, aFileMask: string; aFileList: TStringList);
     procedure MergeFiles(aFileList, aOutput: TStringList; aPasInterfaceSectionOnly: boolean);
-    function ExtractInterfacceSetionFrompasFile(const aPasFileContent: String): String;
+    function ExtractInterfaceSetionFrompasFile(const aPasFileContent: String): String;
     function GenerateFileStructureTree(const aRootDir: string): string;
 
     // Main processing function
-    function ProcessProject(const aProject: TProject): string;
+    procedure ProcessProject(const aProject: TProject; const aOutputFileName: String);
   end;
 
 implementation
@@ -278,7 +279,7 @@ begin
   fSettings := aSettings;
 end;
 
-function TFileProcessor.ExtractInterfacceSetionFrompasFile(
+function TFileProcessor.ExtractInterfaceSetionFrompasFile(
   const aPasFileContent: String): String;
 var
   lCleaner: TInterfaceSectionCleaner;
@@ -429,7 +430,10 @@ begin
   begin
     lLang := fSettings.GetLanguageSpecifier(lFileName);
     aOutput.Add('## ' + ExtractFileName(lFileName));
-    aOutput.Add(Format('Content of file `%s`:', [lFileName]));
+    if aPasInterfaceSectionOnly and endsText('.pas', lFileName) then
+      aOutput.Add(Format('interface section of file `%s`:', [lFileName]))
+    else
+      aOutput.Add(Format('Content of file `%s`:', [lFileName]));
     aOutput.Add('```' + lLang);
 
     try
@@ -437,9 +441,8 @@ begin
     except
       lContent.LoadFromFile(lFileName);
     end;
-    if aPasInterfaceSectionOnly then
-      if endsText('.pas', lFileName) then
-        lContent.Text := ExtractInterfacceSetionFrompasFile(lContent.Text);
+    if aPasInterfaceSectionOnly and endsText('.pas', lFileName) then
+      lContent.Text := ExtractInterfaceSetionFrompasFile(lContent.Text);
 
 
 
@@ -451,10 +454,9 @@ begin
   end;
 end;
 
-function TFileProcessor.ProcessProject(const aProject: TProject): string;
+procedure TFileProcessor.ProcessProject(const aProject: TProject; const aOutputFileName: String);
 var
   lFileList, lOutput: TStringList;
-  lOutputFile: string;
 begin
   // Set up output and file list
   gc(lOutput, TStringList.Create);
@@ -485,15 +487,21 @@ begin
     lOutput.Add('');
   end;
 
-  // Generate and save output
-  GatherFiles(aProject.SourceDir, aProject.FileMask, lFileList);
+  if (aProject.FileList<>'') and TFile.Exists(aProject.FileList) then
+  begin
+    var l:= TStringList.Create;
+    gc(l);
+    l.LoadFromFile(aProject.FileList, TEncoding.utf8);
+    for var lRow in l do
+      lFileList.Add(lRow); // ensures no duplicates will be present
+  end else
+    GatherFiles(aProject.SourceDir, aProject.FileMask, lFileList);
+
   MergeFiles(lFileList, lOutput, aProject.PasInterfaceSectionOnly);
   lOutput.WriteBom;
 
-  lOutputFile := CombinePath([GetInstallDir, 'Output', aProject.Name + '.md']);
-  lOutput.SaveToFile(lOutputFile, TEncoding.UTF8);
 
-  Result := lOutputFile;
+  lOutput.SaveToFile(aOutputFileName, TEncoding.UTF8);
 end;
 
 end.

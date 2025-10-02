@@ -9,7 +9,8 @@ uses
   Vcl.Forms,
   DigestBuilderMainForm in 'DigestBuilderMainForm.pas' {FileMergerMainFrm},
   FileMergerLogic in 'FileMergerLogic.pas',
-  PasUnitInterfaceCleaner in 'PasUnitInterfaceCleaner.pas';
+  PasUnitInterfaceCleaner in 'PasUnitInterfaceCleaner.pas',
+  CliProcessor in 'CliProcessor.pas';
 
 {$R *.res}
 

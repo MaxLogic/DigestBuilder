@@ -80,6 +80,8 @@ __recovery/
 
 # Boss dependency manager vendor folder https://github.com/HashLoad/boss
 modules/
+
 /Projects.ini
-/output
-/bugreport.txt
+output/
+bugreport.txt
+.aider*

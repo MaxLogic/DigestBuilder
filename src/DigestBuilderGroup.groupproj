@@ -1,0 +1,48 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{52BAA2E4-5855-4469-916F-712BE33EAAE0}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="DigestBuilder.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="DigestBuilderCli.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="DigestBuilder">
+        <MSBuild Projects="DigestBuilder.dproj"/>
+    </Target>
+    <Target Name="DigestBuilder:Clean">
+        <MSBuild Projects="DigestBuilder.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="DigestBuilder:Make">
+        <MSBuild Projects="DigestBuilder.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="DigestBuilderCli">
+        <MSBuild Projects="DigestBuilderCli.dproj"/>
+    </Target>
+    <Target Name="DigestBuilderCli:Clean">
+        <MSBuild Projects="DigestBuilderCli.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="DigestBuilderCli:Make">
+        <MSBuild Projects="DigestBuilderCli.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="DigestBuilder;DigestBuilderCli"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="DigestBuilder:Clean;DigestBuilderCli:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="DigestBuilder:Make;DigestBuilderCli:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>
