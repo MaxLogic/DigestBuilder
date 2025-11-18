@@ -66,6 +66,7 @@ begin
     lProject.SourceDir := TDirectory.GetCurrentDirectory;
   if not fParams.find('mask', lProject.FileMask ) then
     lProject.FileMask := '*.pas'; // `|` separated list
+  lProject.Recursive:= MatchText(fParams.Get('recursive', 'yes'), ['y', 'yes', '1', 't', 'True']);
   if not fParams.Find('description', lProject.Description) then
   begin
     if fParams.find('desc-file', fn) then
@@ -180,6 +181,11 @@ begin
            'Source root folder to scan for .pas files');
   PrintOpt('mask',      lMask,
            'File mask(s) to include. Use | to separate multiple masks, e.g. "*.pas|*.inc"');
+
+  PrintOpt('recursive',      '',
+           'Search all sub folders. Default: "yes". '+
+          '(accepts "y", "yes", "1", "t", "true" as Values for true)');
+
   PrintOpt('description', IfThen(lDesc<>'', '"' + lDesc + '"', '<empty>'),
            'Free-form project description text (UTF-8)');
   PrintOpt('desc-file', IfThen(lDescFile<>'', ExpandFileName(lDescFile), '<none>'),

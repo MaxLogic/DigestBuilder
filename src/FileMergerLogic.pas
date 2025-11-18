@@ -50,6 +50,7 @@ type
     FileList: String; // filename of a text file containing the file list to be included. one file per line
     SourceDir: string;
     FileMask: string;
+    Recursive: Boolean;
     Description: string;
     IncludeFileStructure: Boolean;
     PasInterfaceSectionOnly: Boolean;
@@ -89,7 +90,8 @@ type
     constructor Create(aSettings: TFileMergerSettings);
 
     // File gathering and processing
-    procedure GatherFiles(const aSourceDir, aFileMask: string; aFileList: TStringList);
+    procedure GatherFiles(const aSourceDir, aFileMask: string; aRecursive: Boolean; aFileList: TStringList);
+
     procedure MergeFiles(aFileList, aOutput: TStringList; aPasInterfaceSectionOnly: boolean);
     function ExtractInterfaceSetionFrompasFile(const aPasFileContent: String): String;
     function GenerateFileStructureTree(const aRootDir: string): string;
@@ -289,11 +291,11 @@ begin
 end;
 
 procedure TFileProcessor.GatherFiles(const aSourceDir, aFileMask: string;
-                                    aFileList: TStringList);
+  aRecursive: Boolean;
+  aFileList: TStringList);
 var
   lFileMask: TStringList;
   lDir: string;
-  lRecursive: Boolean;
   lOption: TSearchOption;
 begin
   gc(lFileMask, TStringList.Create);
@@ -305,11 +307,9 @@ begin
   if lFileMask.Count = 0 then
     lFileMask.Add('*.*');
 
-  lRecursive := True;
-
   for var lPattern in lFileMask do
   begin
-    if lRecursive then
+    if aRecursive then
       lOption := TSearchOption.soAllDirectories
     else
       lOption := TSearchOption.soTopDirectoryOnly;
@@ -495,7 +495,7 @@ begin
     for var lRow in l do
       lFileList.Add(lRow); // ensures no duplicates will be present
   end else
-    GatherFiles(aProject.SourceDir, aProject.FileMask, lFileList);
+    GatherFiles(aProject.SourceDir, aProject.FileMask, aProject.Recursive, lFileList);
 
   MergeFiles(lFileList, lOutput, aProject.PasInterfaceSectionOnly);
   lOutput.WriteBom;
