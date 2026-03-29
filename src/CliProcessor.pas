@@ -14,6 +14,7 @@ type
     function InternExecute: Boolean;
     procedure ShowHelp;
     procedure DoExport;
+    function ParseMaxTokensPerFile(const aValue: string; out aIsValid: Boolean): Int64;
   public
     constructor Create;
     destructor Destroy; override;
@@ -44,8 +45,11 @@ procedure TCliProcessor.DoExport;
 var
   lProject: TProject;
   fn, lOutputFile: string;
+  lMaxTokenText: string;
   lFileProcessor: TFileProcessor;
   lSettings: TFileMergerSettings;
+  lMaxTokenLimit: Int64;
+  lIsValidMaxToken: Boolean;
 begin
   lSettings:= TFileMergerSettings.Create;
   gc(lSettings);
@@ -70,14 +74,79 @@ begin
   if not fParams.Find('description', lProject.Description) then
   begin
     if fParams.find('desc-file', fn) then
-      lProject.Description:= TFIle.ReadAllText(fn, TEncoding.Utf8);
+  lProject.Description:= TFIle.ReadAllText(fn, TEncoding.Utf8);
   end;
 
   lProject.IncludeFileStructure := fParams.find('incl-map');
   lProject.PasInterfaceSectionOnly:= not fParams.Find('full') ;
+  lIsValidMaxToken := True;
+  if fParams.Find('max-token-per-file', lMaxTokenText) then
+  begin
+    lMaxTokenLimit := ParseMaxTokensPerFile(lMaxTokenText, lIsValidMaxToken);
+    if not lIsValidMaxToken then
+    begin
+      Writeln('Error: invalid value for --max-token-per-file. Use a number (for example 30000), or suffixes K/k or M/m (for example 30k).');
+      Exit;
+    end;
+  end
+  else
+    lMaxTokenLimit := 0;
 
   // Process project
-  lFileProcessor.ProcessProject(lProject, lOutputFile);
+  lFileProcessor.ProcessProject(lProject, lOutputFile, lMaxTokenLimit);
+end;
+
+function TCliProcessor.ParseMaxTokensPerFile(const aValue: string; out aIsValid: Boolean): Int64;
+var
+  lText, lSuffix: string;
+  lValue: Int64;
+begin
+  aIsValid := True;
+  lText := Trim(aValue);
+  if lText = '' then
+  begin
+    aIsValid := False;
+    Exit(0);
+  end;
+
+  lSuffix := LowerCase(RightStr(lText, 1));
+  if lSuffix = 'k' then
+  begin
+    if Length(lText) <= 1 then
+    begin
+      aIsValid := False;
+      Exit(0);
+    end;
+    if not TryStrToInt64(LeftStr(lText, Length(lText) - 1), lValue) then
+    begin
+      aIsValid := False;
+      Exit(0);
+    end;
+    Exit(lValue * 1000);
+  end;
+
+  if lSuffix = 'm' then
+  begin
+    if Length(lText) <= 1 then
+    begin
+      aIsValid := False;
+      Exit(0);
+    end;
+    if not TryStrToInt64(LeftStr(lText, Length(lText) - 1), lValue) then
+    begin
+      aIsValid := False;
+      Exit(0);
+    end;
+    Exit(lValue * 1000000);
+  end;
+
+  if not TryStrToInt64(lText, lValue) then
+  begin
+    aIsValid := False;
+    Exit(0);
+  end;
+
+  Result := lValue;
 end;
 
 
@@ -124,6 +193,7 @@ var
   lDescFile: string;
   lInclMap: Boolean;
   lFull: Boolean;
+  lMaxTokens: string;
   lCwd: string;
   lTitle: String;
   s, lFileList: String;
@@ -160,6 +230,7 @@ begin
     lTitle:= s;
   if fParams.Find('file-list', s) then
     lFileList:= s;
+  lMaxTokens := fParams.Get('max-token-per-file', '0');
 
   Writeln;
   Writeln(Format('%s - Pascal Interface Exporter / File Merger', [lExeName]));
@@ -192,6 +263,8 @@ begin
            'Read description text from a UTF-8 file');
   PrintOpt('incl-map',  BoolToStr(lInclMap, True),
            'Include file structure map in the output', True);
+  PrintOpt('max-token-per-file', lMaxTokens,
+           'Split output into chunks based on max tokens (supports 5000, 30k/K, 2m/M; case-insensitive). Omit to keep single file');
   PrintOpt('full',      BoolToStr(lFull, True),
            'Include full units (not just interface sections)', True);
   PrintOpt('help',      'True',
@@ -202,6 +275,7 @@ begin
   Writeln('  • When neither --description nor --desc-file is provided, description stays empty.');
   Writeln('  • By default only interface sections are merged; pass --full to include implementation.');
   Writeln('  • --incl-map adds a tree of files/units at the top of the output.');
+  Writeln('  • --max-token-per-file=30k (or --max-token-per-file=30000) is optional. Omit it to keep single-file output.');
   Writeln;
   Writeln('Examples:');
   Writeln(Format('  %s --out=merged.md --path="%s" --mask="*.pas|*.inc" --incl-map',
